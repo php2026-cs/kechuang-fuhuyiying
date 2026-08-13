@@ -72,6 +72,30 @@ export function calculateMatch(
   filters: MatchFilters,
   userProfile?: UserProfile
 ): MatchResult {
+  // 已删除或已过期的招募不参与推荐
+  if (recruitment.is_deleted) {
+    return {
+      recruitment,
+      score: 0,
+      reasons: [],
+      sharedCompetitions: [],
+      complementarySkills: [],
+      unmetConditions: ['招募已删除'],
+      lastActive: recruitment.last_active_at || recruitment.created_at,
+    }
+  }
+  if (recruitment.status === 'expired') {
+    return {
+      recruitment,
+      score: 0,
+      reasons: [],
+      sharedCompetitions: [],
+      complementarySkills: [],
+      unmetConditions: ['招募已过期'],
+      lastActive: recruitment.last_active_at || recruitment.created_at,
+    }
+  }
+
   const reasons: string[] = []
   const unmetConditions: string[] = []
   const sharedCompetitions: string[] = []

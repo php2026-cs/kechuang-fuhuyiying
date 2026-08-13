@@ -7,10 +7,63 @@ export interface UserProfile {
   grade: string
   skills: string[]
   bio: string
+  availability: string
+  competition_interests: string[]
   avatar_url?: string
   contact_visibility: 'logged_in' | 'matched' | 'private' | 'hidden'
   created_at: string
   updated_at: string
+}
+
+// 资料完整度
+export interface ProfileCompleteness {
+  percent: number
+  missing: string[]
+}
+
+// 组队申请
+export type ApplicationStatus = 'pending' | 'accepted' | 'rejected' | 'withdrawn'
+
+export interface TeamApplication {
+  id: string
+  recruitment_id: string
+  applicant_id: string
+  message: string
+  status: ApplicationStatus
+  created_at: string
+  updated_at: string
+  recruitment?: Recruitment
+  profiles?: UserProfile
+}
+
+// 站内通知
+export interface NotificationRow {
+  id: string
+  user_id: string
+  type: string
+  title: string
+  content: string
+  is_read: boolean
+  created_at: string
+}
+
+// 竞赛关注
+export interface CompetitionFollow {
+  id: string
+  user_id: string
+  competition_id: string
+  reminder_enabled: boolean
+  created_at: string
+}
+
+// 私信消息
+export interface ChatMessage {
+  id: string
+  sender_id: string
+  receiver_id: string
+  content: string
+  is_read: boolean
+  created_at: string
 }
 
 // 论坛帖子（补充字段）
