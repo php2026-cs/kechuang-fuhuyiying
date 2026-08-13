@@ -29,17 +29,17 @@ export async function toggleFollow(competitionId: string, followed: boolean): Pr
   return !error
 }
 
-export async function recordReminderStages(stages: string[]): Promise<void> {
-  // stages 形如 "competitionId:deadline:7"
-  for (const stage of stages) {
-    const [competitionId, key] = stage.split(':')
-    if (!competitionId || !key) continue
-    await supabase.from('competition_reminders').insert({ competition_id: competitionId, stage: key })
+/**
+ * 调用服务端 RPC 执行幂等截止提醒检查。
+ * 计算、通知写入与去重日志全部在数据库端完成，客户端无法伪造去重记录。
+ */
+export async function runReminderCheck(): Promise<{ ok: boolean; created?: number; error?: string }> {
+  try {
+    const { data, error } = await supabase.rpc('check_competition_reminders')
+    if (error) return { ok: false, error: error.message }
+    const result = data as { ok?: boolean; created?: number; error?: string }
+    return { ok: result?.ok === true, created: result?.created, error: result?.error }
+  } catch {
+    return { ok: false, error: '提醒检查失败' }
   }
-}
-
-export async function fetchMyReminderStages(): Promise<string[]> {
-  const { data, error } = await supabase.from('competition_reminders').select('competition_id, stage')
-  if (error) return []
-  return (data || []).map(r => `${r.competition_id}:${r.stage}`)
 }

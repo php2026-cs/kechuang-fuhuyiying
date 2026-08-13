@@ -8,9 +8,8 @@ import {
   markAllNotificationsRead,
   markNotificationRead,
 } from '@/lib/notificationsService'
-import { fetchMyFollows, fetchMyReminderStages, recordReminderStages } from '@/lib/competitionService'
-import { checkCompetitionReminders } from '@/lib/deadlineReminders'
-import type { Competition, NotificationRow } from '@/types'
+import { runReminderCheck } from '@/lib/competitionService'
+import type { NotificationRow } from '@/types'
 
 export default function Layout() {
   const location = useLocation()
@@ -79,23 +78,14 @@ export default function Layout() {
     return () => { void supabase.removeChannel(channel) }
   }, [user, loadNotifications, loadMsgUnread])
 
-  // 已关注比赛截止提醒（应用启动时幂等检查；真正 24h 后台提醒需 Edge Function/Cron）
+  // 已关注比赛截止提醒（应用启动时幂等检查，逻辑在服务端 RPC 内完成）
   useEffect(() => {
     if (!user || demoMode) return
     let cancelled = false
     void (async () => {
       try {
-        const [follows, stages] = await Promise.all([fetchMyFollows(), fetchMyReminderStages()])
-        if (cancelled || follows.length === 0) return
-        const { data } = await supabase.from('competitions').select('*')
-        const competitions = (data || []) as Competition[]
-        const { notifications: newNotifs, newStages } = checkCompetitionReminders(follows, competitions, stages)
-        if (newNotifs.length === 0) return
-        for (const n of newNotifs) {
-          await supabase.from('notifications').insert(n)
-        }
-        await recordReminderStages(newStages)
-        await loadNotifications()
+        const res = await runReminderCheck()
+        if (!cancelled && res.ok) await loadNotifications()
       } catch {
         // 提醒检查失败不影响使用
       }

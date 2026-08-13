@@ -37,11 +37,12 @@ CREATE POLICY "team_applications_select" ON public.team_applications FOR SELECT 
   applicant_id = auth.uid()
   OR EXISTS (SELECT 1 FROM public.recruitments r WHERE r.id = recruitment_id AND r.user_id = auth.uid())
 );
+-- 创建与状态变更（pending/accepted/rejected/withdrawn）一律通过 RPC，
+-- 客户端不能直接 INSERT/UPDATE/DELETE（否则可绕过“不能申请自己/已满员/已过期”等业务规则）
 DROP POLICY IF EXISTS "team_applications_insert" ON public.team_applications;
-CREATE POLICY "team_applications_insert" ON public.team_applications FOR INSERT WITH CHECK (applicant_id = auth.uid());
--- 状态变更（accepted/rejected/withdrawn）一律通过 RPC，不开放直接 UPDATE/DELETE
-
-GRANT SELECT, INSERT ON public.team_applications TO authenticated;
+REVOKE ALL ON public.team_applications FROM anon;
+REVOKE INSERT, UPDATE, DELETE ON public.team_applications FROM authenticated;
+GRANT SELECT ON public.team_applications TO authenticated;
 
 -- ============================================================
 -- 3. competition_follows（竞赛关注）
@@ -67,6 +68,7 @@ CREATE POLICY "follows_update" ON public.competition_follows FOR UPDATE USING (u
 DROP POLICY IF EXISTS "follows_delete" ON public.competition_follows;
 CREATE POLICY "follows_delete" ON public.competition_follows FOR DELETE USING (user_id = auth.uid());
 
+REVOKE ALL ON public.competition_follows FROM anon;
 GRANT SELECT, INSERT, UPDATE, DELETE ON public.competition_follows TO authenticated;
 
 -- ============================================================
@@ -84,10 +86,12 @@ CREATE TABLE IF NOT EXISTS public.competition_reminders (
 ALTER TABLE public.competition_reminders ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS "reminders_select" ON public.competition_reminders;
 CREATE POLICY "reminders_select" ON public.competition_reminders FOR SELECT USING (user_id = auth.uid());
+-- 提醒去重日志只由服务端 RPC（check_competition_reminders）写入，
+-- 客户端只能读取自己的记录，不能伪造“我已收到提醒”来压制真实提醒
 DROP POLICY IF EXISTS "reminders_insert" ON public.competition_reminders;
-CREATE POLICY "reminders_insert" ON public.competition_reminders FOR INSERT WITH CHECK (user_id = auth.uid());
-
-GRANT SELECT, INSERT ON public.competition_reminders TO authenticated;
+REVOKE ALL ON public.competition_reminders FROM anon;
+REVOKE INSERT, UPDATE, DELETE ON public.competition_reminders FROM authenticated;
+GRANT SELECT ON public.competition_reminders TO authenticated;
 
 -- ============================================================
 -- 5. RPC: 申请加入团队
@@ -131,6 +135,15 @@ BEGIN
     WHERE recruitment_id = p_recruitment_id AND applicant_id = v_uid AND status = 'pending'
   ) THEN
     RETURN jsonb_build_object('ok', false, 'error', '你已经申请过该团队，请等待队长处理');
+  END IF;
+  IF EXISTS (
+    SELECT 1 FROM public.team_applications
+    WHERE recruitment_id = p_recruitment_id AND applicant_id = v_uid AND status = 'accepted'
+  ) THEN
+    RETURN jsonb_build_object('ok', false, 'error', '你已经是该团队成员');
+  END IF;
+  IF length(coalesce(p_message, '')) > 500 THEN
+    RETURN jsonb_build_object('ok', false, 'error', '申请留言最多 500 字');
   END IF;
 
   INSERT INTO public.team_applications (recruitment_id, applicant_id, message, status)
@@ -267,10 +280,82 @@ BEGIN
 END;
 $$;
 
--- 8. 授权 RPC（仅 authenticated，不允许 anon 调用）
+-- ============================================================
+-- 7.5 RPC: 服务端幂等检查竞赛截止提醒
+--     身份取自 auth.uid()；计算、通知与去重日志全部在数据库端完成，
+--     客户端无法伪造去重记录来压制提醒
+-- ============================================================
+CREATE OR REPLACE FUNCTION public.check_competition_reminders()
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_uid UUID;
+  v_follow RECORD;
+  v_comp public.competitions%ROWTYPE;
+  v_deadline DATE;
+  v_days INT;
+  v_created INT := 0;
+BEGIN
+  v_uid := auth.uid();
+  IF v_uid IS NULL THEN
+    RETURN jsonb_build_object('ok', false, 'error', '请先登录');
+  END IF;
+
+  FOR v_follow IN
+    SELECT * FROM public.competition_follows
+    WHERE user_id = v_uid AND reminder_enabled = true
+  LOOP
+    SELECT * INTO v_comp FROM public.competitions WHERE id = v_follow.competition_id;
+    IF v_comp.id IS NULL THEN
+      CONTINUE;
+    END IF;
+    v_deadline := coalesce(v_comp.school_deadline, v_comp.official_deadline);
+    IF v_deadline IS NULL THEN
+      CONTINUE;
+    END IF;
+    v_days := v_deadline - CURRENT_DATE;
+    IF v_days IN (7, 3, 1, 0) THEN
+      IF NOT EXISTS (
+        SELECT 1 FROM public.competition_reminders
+        WHERE user_id = v_uid AND competition_id = v_comp.id AND stage = 'deadline:' || v_days
+      ) THEN
+        INSERT INTO public.competition_reminders (user_id, competition_id, stage)
+        VALUES (v_uid, v_comp.id, 'deadline:' || v_days);
+        INSERT INTO public.notifications (user_id, type, title, content)
+        VALUES (
+          v_uid,
+          'competition',
+          '「' || v_comp.name || '」' || CASE v_days
+            WHEN 7 THEN '距离校内截止还有 7 天'
+            WHEN 3 THEN '距离校内截止还有 3 天'
+            WHEN 1 THEN '明天截止'
+            ELSE '今天截止'
+          END,
+          '校内截止：' || v_deadline::text || '，别错过报名'
+        );
+        v_created := v_created + 1;
+      END IF;
+    END IF;
+  END LOOP;
+
+  RETURN jsonb_build_object('ok', true, 'created', v_created);
+END;
+$$;
+
+-- 8. 授权 RPC
+--    PostgreSQL 默认把函数 EXECUTE 授予 PUBLIC，Supabase 默认特权也可能授予 anon；
+--    必须显式 REVOKE，只允许 authenticated 执行（双层防护，不依赖函数内部 auth.uid() 检查）
+REVOKE ALL ON FUNCTION public.apply_to_team,
+  public.respond_to_team_application,
+  public.withdraw_team_application,
+  public.check_competition_reminders FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.apply_to_team TO authenticated;
 GRANT EXECUTE ON FUNCTION public.respond_to_team_application TO authenticated;
 GRANT EXECUTE ON FUNCTION public.withdraw_team_application TO authenticated;
+GRANT EXECUTE ON FUNCTION public.check_competition_reminders TO authenticated;
 
 -- ============================================================
 -- 9. Realtime（消息 / 通知 / 申请 / 关注）
