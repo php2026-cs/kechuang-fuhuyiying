@@ -1,9 +1,8 @@
 ﻿import { useState, FormEvent } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { Link } from 'react-router-dom'
 import { useAuthStore } from '@/stores/authStore'
 
 export default function RegisterPage() {
-  const navigate = useNavigate()
   const signUp = useAuthStore((s) => s.signUp)
   const [displayName, setDisplayName] = useState('')
   const [email, setEmail] = useState('')

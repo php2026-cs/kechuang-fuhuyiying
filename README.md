@@ -15,11 +15,15 @@
 
 | 功能 | 说明 |
 |------|------|
-| **智能队友匹配** | 基于竞赛方向、技能互补、专业匹配的多维评分，每项推荐附带详细原因 |
-| **招募信息管理** | 发布/编辑/暂停/完成招募，支持多种联系方式可见范围 |
-| **论坛交流** | 分类讨论、发帖/回复/搜索、删除二次确认 |
-| **竞赛日历** | 赛事信息聚合、截止状态提醒、官方信息来源链接 |
-| **积分计算器** | 快速估算竞赛积分，明确标注仅供参考 |
+| **智能队友匹配** | 基于竞赛方向、技能互补、专业匹配的多维评分，真实传入登录用户 Profile，每项推荐附带详细原因，不推荐自己的招募 |
+| **资料完整度** | 显示名称/专业/年级/技能/简介/感兴趣比赛/可参与时间，完整度提示引导完善资料 |
+| **组队申请** | 申请加入 → 队长接受/拒绝（数据库 RPC 事务处理）→ 双方收到站内通知 → 人数更新 → 满员自动完成招募 |
+| **招募信息管理** | 发布/编辑/暂停/恢复/结束/软删除招募，支持所需技能、人数、截止日期、联系方式可见范围 |
+| **论坛交流** | 分类讨论、发帖/回复/删除自己的回复、真实回复计数、删除二次确认 |
+| **私信消息** | 会话聚合、未读红点、已读标记、Realtime + 轮询（按消息 id 去重）、发送失败可重试 |
+| **站内通知** | 组队申请/申请结果/比赛截止提醒，未读角标、全部已读 |
+| **竞赛日历** | 赛事信息聚合、关注赛事、截止状态提醒（7/3/1/0 天，幂等）、官方信息来源链接 |
+| **积分计算器** | A-E 等级 + 名次 + 组队权重 + 科技创新/专业素养上限，明确标注仅供参考 |
 | **评审演示模式** | 独立演示数据，不污染生产环境，30 秒完整展示 |
 | **管理员后台** | 用户管理、招募管理、帖子管理（仅通过 Supabase Auth + RLS 授权） |
 
@@ -115,9 +119,35 @@ pnpm build
 3. 在 SQL Editor 中依次执行：
    - `supabase/migrations/001_initial_schema.sql`（表结构）
    - `supabase/migrations/002_rls_policies.sql`（RLS 策略）
+   - `supabase/migrations/003_product_flow.sql`（产品闭环：用户资料扩展 / 组队申请 / 竞赛关注 / 截止提醒 + 安全 RPC）
    - `supabase/seed.sql`（可选，竞赛种子数据）
 4. 设置管理员：在 `user_roles` 表中插入管理员记录
 5. 将 Supabase URL 和 anon key 配置到 `.env`
+
+### 组队申请安全设计
+
+- 身份唯一真相为 `auth.uid()`，客户端不能指定 `applicant_id` / `owner_id` / `user_id`
+- 新表只对 `authenticated` 授权，**不开放** `USING(true)` / `WITH CHECK(true)` 匿名全 CRUD
+- 申请/接受/拒绝/撤回全部通过 `SECURITY DEFINER` RPC（固定 `search_path`，事务内校验状态与人数，防止并发超员）
+- 同一用户对同一有效招募只能有一个 pending 申请（数据库唯一索引 + RPC 双重校验）
+- 生产环境不做静默 localStorage 兜底：申请/消息/回复失败均明确提示，不伪装成功
+
+### Realtime 配置
+
+`003_product_flow.sql` 会把 `messages / notifications / team_applications / competition_follows`
+加入 `supabase_realtime` publication。若未自动生效，请在 Supabase Dashboard → Database → Replication
+手动勾选以上表。
+
+### 截止提醒（Reminder）
+
+当前实现为**应用启动时的幂等检查**：已关注比赛距离校内截止 7/3/1/0 天时各生成一次通知，
+通过 `competition_reminders` 表（user + competition + stage 唯一）去重。
+
+如需真正的 24 小时后台提醒，生产环境可二选一：
+1. Supabase Edge Function + `pg_cron`
+2. GitHub Actions cron 定时调用提醒逻辑
+
+前端不做“你会收到提醒”但后端无能力的虚假承诺。
 
 ## 数据库表结构
 
@@ -168,9 +198,10 @@ pnpm build
 ## 已知限制
 
 - 当前为静态前端部署，部分功能（如邮件确认、文件上传）需 Supabase 配置
-- 私信目前使用轮询模式，未来可升级为 Realtime 订阅
+- 私信已支持 Realtime + 轮询兜底，但 Realtime 需要 Supabase 项目开启对应表的发布
 - 花名册验证接口需部署 Supabase Edge Function
-- 积分计算器当前为参考模板，具体规则需配置
+- 积分规则为参考模板（A-E 五级 + 名次 + 组队权重），具体以学院当年正式文件为准
+- 仓库根目录 `assets/` 为早期提交的历史构建产物（已由 GitHub Actions 从 `dist/` 部署替代），本次未改动
 
 ## 后续规划
 
