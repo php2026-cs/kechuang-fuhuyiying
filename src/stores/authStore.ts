@@ -48,7 +48,9 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   },
 
   signUp: async (email, password, displayName) => {
-    const { data, error } = await supabase.auth.signUp({
+    // profile 由数据库端 auth.users AFTER INSERT trigger 自动创建，
+    // 客户端不再直插 public.profiles（邮箱确认开启时可能还没有 authenticated session）
+    const { error } = await supabase.auth.signUp({
       email,
       password,
       options: {
@@ -57,13 +59,6 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       },
     })
     if (error) return { error: error.message }
-    if (data.user) {
-      const { error: profileError } = await supabase.from('profiles').insert({
-        user_id: data.user.id,
-        display_name: displayName,
-      })
-      if (profileError) return { error: profileError.message }
-    }
     return {}
   },
 
