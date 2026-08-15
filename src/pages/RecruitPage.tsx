@@ -6,6 +6,7 @@ import { useDemoStore } from '@/stores/demoStore'
 import { calculateMatch, rankMatches } from '@/lib/matching'
 import { canApplyToTeam } from '@/lib/applicationRules'
 import { applyToTeam, fetchMyApplications } from '@/lib/applications'
+import { attachOwnerProfiles } from '@/lib/relations'
 import SkillsEditor from '@/components/SkillsEditor'
 import type { MatchFilters, MatchResult, Recruitment, TeamApplication } from '@/types'
 
@@ -245,12 +246,13 @@ export default function RecruitPage() {
     try {
       const { data, error: queryError } = await supabase
         .from('recruitments')
-        .select('*, profiles(*)')
+        .select('*')
         .eq('is_deleted', false)
         .order('created_at', { ascending: false })
       if (queryError) throw queryError
-      setRecruitments((data || []) as Recruitment[])
-    } catch {
+      setRecruitments(await attachOwnerProfiles((data || []) as Recruitment[]))
+    } catch (e) {
+      console.error('[recruit] load recruitments failed:', e)
       setError('加载招募信息失败，请稍后重试')
     } finally {
       setLoading(false)

@@ -2,6 +2,7 @@
 import { Routes, Route, Link, useLocation } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
 import { useAuthStore } from '@/stores/authStore'
+import { attachOwnerProfiles } from '@/lib/relations'
 import type { Recruitment, ForumPost } from '@/types'
 
 function AdminLayout({ children }: { children: React.ReactNode }) {
@@ -74,8 +75,8 @@ function RecruitmentsManager() {
 
   useEffect(() => {
     async function load() {
-      const { data } = await supabase.from('recruitments').select('*, profiles(*)').order('created_at', { ascending: false })
-      setItems((data || []) as Recruitment[])
+      const { data } = await supabase.from('recruitments').select('*').order('created_at', { ascending: false })
+      setItems(await attachOwnerProfiles((data || []) as Recruitment[]))
       setLoading(false)
     }
     load()
@@ -128,8 +129,8 @@ function PostsManager() {
 
   useEffect(() => {
     async function load() {
-      const { data } = await supabase.from('forum_posts').select('*, profiles(*)').order('created_at', { ascending: false })
-      setPosts((data || []) as ForumPost[])
+      const { data } = await supabase.from('forum_posts').select('*').order('created_at', { ascending: false })
+      setPosts(await attachOwnerProfiles((data || []) as ForumPost[]))
       setLoading(false)
     }
     load()

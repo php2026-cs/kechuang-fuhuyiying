@@ -20,12 +20,13 @@ export async function fetchMyFollows(): Promise<CompetitionFollow[]> {
   return (data || []).map(rowToFollow)
 }
 
-export async function toggleFollow(competitionId: string, followed: boolean): Promise<boolean> {
+export async function toggleFollow(competitionId: string, followed: boolean, userId: string): Promise<boolean> {
   if (followed) {
     const { error } = await supabase.from('competition_follows').delete().eq('competition_id', competitionId)
     return !error
   }
-  const { error } = await supabase.from('competition_follows').insert({ competition_id: competitionId })
+  // user_id 必须显式提交：RLS 策略要求 WITH CHECK (user_id = auth.uid())
+  const { error } = await supabase.from('competition_follows').insert({ competition_id: competitionId, user_id: userId })
   return !error
 }
 

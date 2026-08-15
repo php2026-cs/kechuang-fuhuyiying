@@ -1,4 +1,5 @@
 import { supabase } from '@/lib/supabase'
+import { attachOwnerProfiles } from '@/lib/relations'
 import type { Recruitment, TeamApplication } from '@/types'
 
 export interface ApplyResult {
@@ -23,30 +24,30 @@ function rowToApplication(row: Record<string, unknown>): TeamApplication {
 export async function fetchMyApplications(): Promise<TeamApplication[]> {
   const { data, error } = await supabase
     .from('team_applications')
-    .select('*, recruitments(*), profiles(*)')
+    .select('*, recruitments(*)')
     .order('created_at', { ascending: false })
   if (error) throw error
-  return (data || []).map(rowToApplication)
+  return attachOwnerProfiles((data || []).map(rowToApplication))
 }
 
 export async function fetchRecruitmentApplications(recruitmentId: string): Promise<TeamApplication[]> {
   const { data, error } = await supabase
     .from('team_applications')
-    .select('*, profiles(*)')
+    .select('*')
     .eq('recruitment_id', recruitmentId)
     .order('created_at', { ascending: false })
   if (error) throw error
-  return (data || []).map(rowToApplication)
+  return attachOwnerProfiles((data || []).map(rowToApplication))
 }
 
 export async function fetchApplicationsAsOwner(): Promise<TeamApplication[]> {
   // RLS 只允许队长看到自己招募收到的申请
   const { data, error } = await supabase
     .from('team_applications')
-    .select('*, recruitments(*), profiles(*)')
+    .select('*, recruitments(*)')
     .order('created_at', { ascending: false })
   if (error) throw error
-  return (data || []).map(rowToApplication)
+  return attachOwnerProfiles((data || []).map(rowToApplication))
 }
 
 export async function applyToTeam(recruitmentId: string, message: string): Promise<ApplyResult> {

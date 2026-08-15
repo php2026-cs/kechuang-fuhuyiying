@@ -5,6 +5,7 @@ import { Link } from 'react-router-dom'
 import SkillsEditor from '@/components/SkillsEditor'
 import CompletenessBar from '@/components/CompletenessBar'
 import { calculateProfileCompleteness, COMPLETENESS_LABELS } from '@/lib/profileCompleteness'
+import { mergeProfileIntoForm, profileToFormData } from '@/lib/profileForm'
 import {
   fetchMyApplications,
   fetchApplicationsAsOwner,
@@ -171,16 +172,7 @@ export default function ProfilePage() {
   const refreshProfile = useAuthStore(s => s.refreshProfile)
   const [editing, setEditing] = useState(false)
   const [onboardingDismissed, setOnboardingDismissed] = useState(false)
-  const [formData, setFormData] = useState({
-    display_name: '',
-    major: '',
-    grade: '',
-    skills: [] as string[],
-    bio: '',
-    availability: '',
-    competition_interests: [] as string[],
-    contact_visibility: 'logged_in' as UserProfile['contact_visibility'],
-  })
+  const [formData, setFormData] = useState(() => profileToFormData(profile))
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState('')
   const [saveSuccess, setSaveSuccess] = useState('')
@@ -201,20 +193,21 @@ export default function ProfilePage() {
   const completeness = useMemo(() => calculateProfileCompleteness(profile), [profile])
   const needsOnboarding = !!user && !onboardingDismissed && completeness.percent < 60
 
+  // 表单只在打开编辑弹窗时初始化（见 openEditModal），
+  // 避免 profile 异步刷新时通过 effect 重置正在编辑的内容
+
+  const openEditModal = () => {
+    setFormData(profileToFormData(profile))
+    setEditing(true)
+  }
+
+  // profile 异步加载完成后，把未编辑字段补填为 profile 值，
+  // 用户已输入的字段保持不变（避免覆盖输入，也避免空表单被校验拦截）
   useEffect(() => {
-    if (profile) {
-      setFormData({
-        display_name: profile.display_name || '',
-        major: profile.major || '',
-        grade: profile.grade || '',
-        skills: profile.skills || [],
-        bio: profile.bio || '',
-        availability: profile.availability || '',
-        competition_interests: profile.competition_interests || [],
-        contact_visibility: profile.contact_visibility || 'logged_in',
-      })
+    if (editing && profile) {
+      setFormData(prev => mergeProfileIntoForm(prev, profile))
     }
-  }, [profile])
+  }, [editing, profile])
 
   const loadRecruitments = useCallback(async () => {
     if (!user) return
@@ -407,7 +400,7 @@ export default function ProfilePage() {
           </div>
           <div className="flex gap-2">
             <button onClick={() => setOnboardingDismissed(true)} className="px-4 py-2 text-sm text-gray-500 hover:bg-gray-50 rounded-lg cursor-pointer">稍后填写</button>
-            <button onClick={() => setEditing(true)} className="px-4 py-2 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 cursor-pointer">完善资料</button>
+            <button onClick={openEditModal} className="px-4 py-2 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 cursor-pointer">完善资料</button>
           </div>
         </div>
       )}
@@ -422,7 +415,7 @@ export default function ProfilePage() {
             <p className="font-medium text-gray-900">{profile?.display_name || '未设置'}</p>
             <p className="text-sm text-gray-500">{user.email}</p>
           </div>
-          <button onClick={() => setEditing(true)} className="px-3 py-1.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 cursor-pointer">编辑资料</button>
+          <button onClick={openEditModal} className="px-3 py-1.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 cursor-pointer">编辑资料</button>
         </div>
 
         <div className="mt-4">

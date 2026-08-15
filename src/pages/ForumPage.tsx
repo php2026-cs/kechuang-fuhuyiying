@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState, FormEvent } from 'react'
 import { supabase } from '@/lib/supabase'
 import { useAuthStore } from '@/stores/authStore'
+import { attachOwnerProfiles } from '@/lib/relations'
 import type { ForumPost, ForumReply } from '@/types'
 
 const CATEGORIES = ['全部', '经验分享', '技术讨论', '组队邀请', '赛事讨论', '其他']
@@ -170,7 +171,7 @@ export default function ForumPage() {
     try {
       let query = supabase
         .from('forum_posts')
-        .select('*, profiles(*)')
+        .select('*')
         .eq('is_deleted', false)
         .order('is_pinned', { ascending: false })
         .order('created_at', { ascending: false })
@@ -180,21 +181,22 @@ export default function ForumPage() {
 
       const { data, error: queryError } = await query
       if (queryError) throw queryError
-      setPosts((data || []) as ForumPost[])
+      setPosts(await attachOwnerProfiles((data || []) as ForumPost[]))
 
       // 批量加载回复，用于真实回复计数
       const ids = (data || []).map((p: ForumPost) => p.id)
       if (ids.length > 0) {
         const { data: replyData } = await supabase
           .from('forum_replies')
-          .select('*, profiles(*)')
+          .select('*')
           .eq('is_deleted', false)
           .in('post_id', ids)
-        setReplies((replyData || []) as ForumReply[])
+        setReplies(await attachOwnerProfiles((replyData || []) as ForumReply[]))
       } else {
         setReplies([])
       }
-    } catch {
+    } catch (e) {
+      console.error('[forum] load posts failed:', e)
       setError('加载论坛失败，请稍后重试')
     } finally {
       setLoading(false)

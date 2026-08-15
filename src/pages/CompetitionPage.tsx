@@ -208,7 +208,7 @@ export default function CompetitionPage() {
       return
     }
     const followed = follows.some(f => f.competition_id === comp.id)
-    const ok = await toggleFollow(comp.id, followed)
+    const ok = await toggleFollow(comp.id, followed, user.id)
     if (ok) await loadFollows()
   }
 

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import mig from '../supabase/migrations/005_auth_profile_bootstrap_and_legacy_grants.sql?raw'
+import mig006 from '../supabase/migrations/006_fix_user_roles_policy.sql?raw'
 
 describe('migration 005: auth profile bootstrap', () => {
   it('creates an AFTER INSERT trigger on auth.users', () => {
@@ -67,5 +68,26 @@ describe('migration 005: legacy grants (minimal privilege)', () => {
 
   it('does not weaken 003/004 protections (no client INSERT on private tables)', () => {
     expect(mig).not.toMatch(/GRANT (INSERT|UPDATE|DELETE).*public\.(team_applications|competition_reminders|notifications) TO (anon|authenticated)/)
+  })
+})
+
+describe('migration 006: user_roles policy recursion fix', () => {
+  it('defines is_admin() as SECURITY DEFINER with empty search_path and schema-qualified query', () => {
+    expect(mig006).toContain('FUNCTION public.is_admin()')
+    expect(mig006).toContain('SECURITY DEFINER')
+    expect(mig006).toContain("SET search_path = ''")
+    expect(mig006).toContain('SELECT 1 FROM public.user_roles r')
+  })
+
+  it('policy references public.is_admin() and no longer self-references user_roles in EXISTS', () => {
+    const policy = mig006.slice(mig006.indexOf('CREATE POLICY "user_roles_select"'))
+    expect(policy).toContain('public.is_admin()')
+    expect(policy).not.toMatch(/SELECT 1 FROM public\.user_roles r WHERE r\.user_id = auth\.uid\(\) AND r\.role = 'admin'/)
+  })
+
+  it('function execute is revoked from PUBLIC/anon and granted only to authenticated', () => {
+    expect(mig006).toContain('REVOKE ALL ON FUNCTION public.is_admin() FROM PUBLIC, anon')
+    expect(mig006).toContain('GRANT EXECUTE ON FUNCTION public.is_admin() TO authenticated')
+    expect(mig006).not.toMatch(/GRANT EXECUTE ON FUNCTION public\.is_admin\(\) TO anon/)
   })
 })
