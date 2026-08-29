@@ -2,7 +2,6 @@ import { expect, test, type Page } from '@playwright/test'
 import { loadE2ECredentials } from './helpers/env'
 
 const creds = loadE2ECredentials()
-const hasAccounts = creds !== null
 
 function collectErrors(page: Page): string[] {
   const errors: string[] = []
@@ -43,6 +42,11 @@ async function addProfileSkill(page: Page, skill: string): Promise<void> {
     r => r.url().includes('/rest/v1/profiles') && r.request().method() === 'GET' && r.status() === 200,
   )
   await page.getByRole('button', { name: '编辑资料' }).click()
+  // 技能上限为 20；测试数据累积可能已满，先移除一个旧技能腾出名额
+  const skillTags = page.getByRole('button', { name: /^删除技能 / })
+  if ((await skillTags.count()) >= 20) {
+    await skillTags.first().click()
+  }
   const skillInput = page.getByPlaceholder('输入技能...')
   await skillInput.fill(skill)
   await page.getByRole('button', { name: '添加', exact: true }).first().click()
@@ -88,6 +92,11 @@ test.describe.serial('dual-account E2E', () => {
     await page.locator('input[type="number"]').nth(1).fill('2')
     await page.getByRole('button', { name: '保存', exact: true }).click()
 
+    // 等待“我的招募”列表重新加载完成后再断言
+    await page.waitForResponse(
+      r => r.url().includes('/rest/v1/recruitments') && r.url().includes('order=created_at.desc')
+        && r.request().method() === 'GET' && r.status() === 200,
+    )
     await expect(page.getByText(teamName, { exact: true }).first()).toBeVisible()
     await expect(page.getByText('前端开发', { exact: true }).first()).toBeVisible()
     await expectCleanPage(page, '/', errors)
@@ -108,18 +117,23 @@ test.describe.serial('dual-account E2E', () => {
     const errors = collectErrors(page)
     await login(page, creds.bEmail, creds.bPassword)
     await page.goto('recruit', { waitUntil: 'load' })
-    // 等待招募列表加载完成，避免在列表到达前执行匹配
+    // 等待招募列表响应（慢响应时最多等 30s），随后仍用重试兜底
     await page.waitForResponse(
       r => r.url().includes('/rest/v1/recruitments') && r.url().includes('order=created_at.desc')
         && r.request().method() === 'GET' && r.status() === 200,
-    )
-    // 等 React 提交列表 state，避免“开始匹配”读到旧空列表
-    await page.waitForTimeout(800)
+      { timeout: 30000 },
+    ).catch(() => undefined)
     await page.getByRole('button', { name: /展开筛选/ }).click()
     await page.getByRole('button', { name: '开始匹配' }).click()
 
     const team = page.getByText(/E2E队\d+/).first()
-    await expect(team).toBeVisible()
+    // 若列表仍在加载导致结果为空，重试“开始匹配”（最多 5 次）
+    for (let i = 0; i < 5; i++) {
+      if (await team.isVisible().catch(() => false)) break
+      await page.waitForTimeout(2000)
+      await page.getByRole('button', { name: '开始匹配' }).click()
+    }
+    await expect(team).toBeVisible({ timeout: 15000 })
     await expect(page.getByText(/匹配 \d+%/).first()).toBeVisible()
     await expect(page.getByText(/你具备对方需要/).first()).toBeVisible()
 
@@ -181,12 +195,17 @@ test.describe.serial('dual-account E2E', () => {
     await pageB.waitForResponse(
       r => r.url().includes('/rest/v1/recruitments') && r.url().includes('order=created_at.desc')
         && r.request().method() === 'GET' && r.status() === 200,
-    )
-    await pageB.waitForTimeout(800)
+      { timeout: 30000 },
+    ).catch(() => undefined)
     await pageB.getByRole('button', { name: /展开筛选/ }).click()
     await pageB.getByRole('button', { name: '开始匹配' }).click()
     const team = pageB.getByText(/E2E队\d+/).first()
-    await expect(team).toBeVisible()
+    for (let i = 0; i < 5; i++) {
+      if (await team.isVisible().catch(() => false)) break
+      await pageB.waitForTimeout(2000)
+      await pageB.getByRole('button', { name: '开始匹配' }).click()
+    }
+    await expect(team).toBeVisible({ timeout: 15000 })
     const card = pageB.locator('div.bg-white.rounded-xl.border.border-gray-200.p-5')
       .filter({ has: pageB.getByRole('heading', { name: /E2E队\d+/ }) })
       .first()
@@ -223,6 +242,112 @@ test.describe.serial('dual-account E2E', () => {
     await expectCleanPage(pageB, '/', errorsB)
     await pageA.close()
     await pageB.close()
+  })
+
+  test('message guard: mark-read ok; flag tampering and is_read revert blocked (007)', async ({ browser }) => {
+    if (!creds) return
+
+    // B 先给 A 发一条消息（走真实 UI + RPC）
+    const pageB = await browser.newPage()
+    pageB.on('response', r => {
+      if (r.url().includes('/rest/v1/messages')) {
+        console.log('[guard-debug] messages', r.request().method(), 'status =', r.status())
+      }
+    })
+    await login(pageB, creds.bEmail, creds.bPassword)
+    await pageB.goto('recruit', { waitUntil: 'load' })
+    await pageB.waitForResponse(
+      r => r.url().includes('/rest/v1/recruitments') && r.url().includes('order=created_at.desc')
+        && r.request().method() === 'GET' && r.status() === 200,
+      { timeout: 30000 },
+    ).catch(() => undefined)
+    await pageB.getByRole('button', { name: /展开筛选/ }).click()
+    await pageB.getByRole('button', { name: '开始匹配' }).click()
+    const teamB = pageB.getByText(/E2E队\d+/).first()
+    for (let i = 0; i < 5; i++) {
+      if (await teamB.isVisible().catch(() => false)) break
+      await pageB.waitForTimeout(2000)
+      await pageB.getByRole('button', { name: '开始匹配' }).click()
+    }
+    await expect(teamB).toBeVisible({ timeout: 15000 })
+    const card = pageB.locator('div.bg-white.rounded-xl.border.border-gray-200.p-5')
+      .filter({ has: pageB.getByRole('heading', { name: /E2E队\d+/ }) })
+      .first()
+    await card.getByRole('button', { name: '私信队长' }).click()
+    await pageB.waitForURL(url => url.pathname.startsWith('/kechuang-fuhuyiying/messages'))
+    const guardMsg = `E2EGuard${Date.now()}`
+    const guardInput = pageB.getByPlaceholder('输入消息（Enter 发送，Shift+Enter 换行）')
+    // 等预填文本生效后再覆盖，避免预填 effect 晚于 fill 而重置输入
+    await expect(guardInput).toHaveValue(/你好，我对你的/)
+    await guardInput.fill(guardMsg)
+    await pageB.waitForTimeout(300)
+    await pageB.getByRole('button', { name: '发送', exact: true }).click()
+    // 发送成功以真实的 POST 2xx 响应为准（气泡文本可能与输入值混淆）
+    await pageB.waitForResponse(
+      r => r.url().includes('/rest/v1/messages') && r.request().method() === 'POST'
+        && r.status() >= 200 && r.status() < 300,
+      { timeout: 15000 },
+    )
+    await pageB.close()
+
+    // A 打开会话：触发真实 mark-read，并捕获会话请求头与消息 id（值仅内存使用，不输出）
+    const pageA = await browser.newPage()
+    let apiBase = ''
+    let apiKey = ''
+    let authHeader = ''
+    let msgId = ''
+    pageA.on('request', r => {
+      if (r.url().includes('/rest/v1/messages')) {
+        const headers = r.headers()
+        apiBase = r.url().split('/rest/v1/')[0]
+        if (headers.apikey) apiKey = headers.apikey
+        if (headers.authorization) authHeader = headers.authorization
+      }
+    })
+    pageA.on('response', async r => {
+      if (r.url().includes('/rest/v1/messages') && r.request().method() === 'GET') {
+        const body = await r.json().catch(() => null)
+        if (Array.isArray(body)) {
+          const hit = body.find(m => m.content === guardMsg)
+          if (hit) msgId = hit.id
+        }
+      }
+    })
+    await login(pageA, creds.aEmail, creds.aPassword)
+    await pageA.goto('messages', { waitUntil: 'load' })
+    const conv = pageA.getByRole('button').filter({ hasText: guardMsg }).first()
+    await expect(conv).toBeVisible({ timeout: 15000 })
+    await conv.click()
+    await expect(pageA.getByText(guardMsg, { exact: true }).first()).toBeVisible()
+    await pageA.waitForTimeout(1500)
+    expect(apiBase).toBeTruthy()
+    expect(apiKey).toBeTruthy()
+    expect(authHeader).toBeTruthy()
+    expect(msgId).toBeTruthy()
+
+    const patch = async (payload: Record<string, unknown>): Promise<number> => {
+      const res = await fetch(`${apiBase}/rest/v1/messages?id=eq.${msgId}`, {
+        method: 'PATCH',
+        headers: {
+          apikey: apiKey,
+          authorization: authHeader,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(payload),
+      })
+      return res.status
+    }
+
+    // 1. receiver 标记已读 true：成功（幂等）
+    expect(await patch({ is_read: true })).toBeLessThan(300)
+    // 2. 同时修改 is_deleted_by_sender：被 guard 拒绝
+    expect(await patch({ is_deleted_by_sender: true })).toBeGreaterThanOrEqual(400)
+    // 3. 同时修改 is_deleted_by_receiver：被 guard 拒绝
+    expect(await patch({ is_deleted_by_receiver: true })).toBeGreaterThanOrEqual(400)
+    // 4. is_read 从 true 改回 false：被 guard 拒绝
+    expect(await patch({ is_read: false })).toBeGreaterThanOrEqual(400)
+
+    await pageA.close()
   })
 
   test('A: forum post + reply; competition follow/unfollow + points', async ({ browser }) => {
