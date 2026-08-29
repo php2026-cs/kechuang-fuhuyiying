@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest'
 
 import mig from '../supabase/migrations/005_auth_profile_bootstrap_and_legacy_grants.sql?raw'
 import mig006 from '../supabase/migrations/006_fix_user_roles_policy.sql?raw'
+import mig007 from '../supabase/migrations/007_final_security_hardening.sql?raw'
+import mig008 from '../supabase/migrations/008_fix_message_read_guard_null.sql?raw'
 
 describe('migration 005: auth profile bootstrap', () => {
   it('creates an AFTER INSERT trigger on auth.users', () => {
@@ -89,5 +91,133 @@ describe('migration 006: user_roles policy recursion fix', () => {
     expect(mig006).toContain('REVOKE ALL ON FUNCTION public.is_admin() FROM PUBLIC, anon')
     expect(mig006).toContain('GRANT EXECUTE ON FUNCTION public.is_admin() TO authenticated')
     expect(mig006).not.toMatch(/GRANT EXECUTE ON FUNCTION public\.is_admin\(\) TO anon/)
+  })
+})
+
+describe('migration 007: final security hardening', () => {
+  const guard = mig007.slice(mig007.indexOf('FUNCTION public.messages_update_guard'))
+
+  it('exists and hardens the message guard (id / flags locked)', () => {
+    expect(mig007).toContain('CREATE OR REPLACE FUNCTION public.messages_update_guard()')
+    expect(guard).toContain('NEW.id IS DISTINCT FROM OLD.id')
+    expect(guard).toContain('NEW.sender_id IS DISTINCT FROM OLD.sender_id')
+    expect(guard).toContain('NEW.receiver_id IS DISTINCT FROM OLD.receiver_id')
+    expect(guard).toContain('NEW.content IS DISTINCT FROM OLD.content')
+    expect(guard).toContain('NEW.created_at IS DISTINCT FROM OLD.created_at')
+    expect(guard).toContain('NEW.is_deleted_by_sender IS DISTINCT FROM OLD.is_deleted_by_sender')
+    expect(guard).toContain('NEW.is_deleted_by_receiver IS DISTINCT FROM OLD.is_deleted_by_receiver')
+  })
+
+  it('only is_read can change and only towards true (no true -> false)', () => {
+    expect(guard).toContain('NEW.is_read = true')
+    expect(guard).toContain("RAISE EXCEPTION 'messages: is_read \u53EA\u80FD\u7F6E\u4E3A true'")
+  })
+
+  it('hardens private_messages and pokes (RLS on, allow_all dropped, grants revoked)', () => {
+    expect(mig007).toContain('ALTER TABLE public.private_messages ENABLE ROW LEVEL SECURITY')
+    expect(mig007).toContain('ALTER TABLE public.pokes ENABLE ROW LEVEL SECURITY')
+    expect(mig007).toContain('DROP POLICY IF EXISTS "allow_all_private_messages" ON public.private_messages')
+    expect(mig007).toContain('DROP POLICY IF EXISTS "allow_all_pokes" ON public.pokes')
+    expect(mig007).toContain('REVOKE ALL ON TABLE public.private_messages FROM anon')
+    expect(mig007).toContain('REVOKE ALL ON TABLE public.private_messages FROM authenticated')
+    expect(mig007).toContain('REVOKE ALL ON TABLE public.pokes FROM anon')
+    expect(mig007).toContain('REVOKE ALL ON TABLE public.pokes FROM authenticated')
+  })
+
+  it('does not DROP/DELETE/TRUNCATE legacy data', () => {
+    expect(mig007).not.toMatch(/DROP TABLE (public\.)?(private_messages|pokes)/)
+    expect(mig007).not.toMatch(/DELETE FROM (public\.)?(private_messages|pokes)/)
+    expect(mig007).not.toMatch(/TRUNCATE (TABLE )?(public\.)?(private_messages|pokes)/)
+  })
+
+  it('backfills admin metadata into user_roles with ON CONFLICT DO NOTHING', () => {
+    expect(mig007).toContain('INSERT INTO public.user_roles (user_id, role)')
+    expect(mig007).toContain('FROM auth.users u')
+    expect(mig007).toContain("raw_app_meta_data ->> 'role' = 'admin'")
+    expect(mig007).toContain('ON CONFLICT (user_id, role) DO NOTHING')
+  })
+})
+
+describe('migration 008: message guard NULL boundary fix', () => {
+  const guard = mig008.slice(mig008.indexOf('FUNCTION public.messages_update_guard'))
+
+  it('replaces the guard with the NULL-safe is_read check', () => {
+    expect(mig008).toContain('CREATE OR REPLACE FUNCTION public.messages_update_guard()')
+    expect(guard).toContain('NEW.is_read IS DISTINCT FROM TRUE')
+    expect(guard).not.toContain('NOT (NEW.is_read = true)')
+    expect(guard).toContain("RAISE EXCEPTION 'messages: \u53EA\u80FD\u66F4\u65B0\u5DF2\u8BFB\u72B6\u6001'")
+    expect(guard).toContain("RAISE EXCEPTION 'messages: is_read \u53EA\u80FD\u7F6E\u4E3A true'")
+  })
+
+  it('keeps all immutable fields locked', () => {
+    expect(guard).toContain('NEW.id IS DISTINCT FROM OLD.id')
+    expect(guard).toContain('NEW.sender_id IS DISTINCT FROM OLD.sender_id')
+    expect(guard).toContain('NEW.receiver_id IS DISTINCT FROM OLD.receiver_id')
+    expect(guard).toContain('NEW.content IS DISTINCT FROM OLD.content')
+    expect(guard).toContain('NEW.created_at IS DISTINCT FROM OLD.created_at')
+    expect(guard).toContain('NEW.is_deleted_by_sender IS DISTINCT FROM OLD.is_deleted_by_sender')
+    expect(guard).toContain('NEW.is_deleted_by_receiver IS DISTINCT FROM OLD.is_deleted_by_receiver')
+  })
+
+  it('does not rename/recreate the trigger and adds no grants', () => {
+    expect(mig008).not.toContain('CREATE TRIGGER')
+    expect(mig008).not.toContain('DROP TRIGGER')
+    expect(mig008).not.toMatch(/GRANT|REVOKE/)
+  })
+
+  it('covers the is_read transition semantics required by the guard', () => {
+    interface MsgRow {
+      id: string
+      sender_id: string
+      receiver_id: string
+      content: string
+      created_at: string
+      is_read: boolean | null
+      is_deleted_by_sender: boolean
+      is_deleted_by_receiver: boolean
+    }
+
+    const base: MsgRow = {
+      id: 'm1',
+      sender_id: 'u1',
+      receiver_id: 'u2',
+      content: 'hello',
+      created_at: '2026-01-01T00:00:00Z',
+      is_read: false,
+      is_deleted_by_sender: false,
+      is_deleted_by_receiver: false,
+    }
+
+    // Model of the 008 guard: immutable fields locked, then is_read must be exactly true.
+    const guardBlocks = (oldRow: MsgRow, newRow: MsgRow): boolean => {
+      const immutable: Array<keyof Omit<MsgRow, 'is_read'>> = [
+        'id',
+        'sender_id',
+        'receiver_id',
+        'content',
+        'created_at',
+        'is_deleted_by_sender',
+        'is_deleted_by_receiver',
+      ]
+      for (const field of immutable) {
+        if (newRow[field] !== oldRow[field]) return true
+      }
+      return !(newRow.is_read === true)
+    }
+
+    // false -> true: allowed
+    expect(guardBlocks(base, { ...base, is_read: true })).toBe(false)
+    // true -> true: allowed (idempotent mark-read)
+    expect(guardBlocks({ ...base, is_read: true }, { ...base, is_read: true })).toBe(false)
+    // true -> false: blocked
+    expect(guardBlocks({ ...base, is_read: true }, { ...base, is_read: false })).toBe(true)
+    // true -> NULL: blocked
+    expect(guardBlocks({ ...base, is_read: true }, { ...base, is_read: null })).toBe(true)
+    // tampering with is_deleted_by_sender: blocked
+    expect(guardBlocks(base, { ...base, is_read: true, is_deleted_by_sender: true })).toBe(true)
+    // tampering with is_deleted_by_receiver: blocked
+    expect(guardBlocks(base, { ...base, is_read: true, is_deleted_by_receiver: true })).toBe(true)
+    // changing the row identity: blocked
+    expect(guardBlocks(base, { ...base, is_read: true, id: 'm2' })).toBe(true)
   })
 })
