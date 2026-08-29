@@ -63,15 +63,25 @@ const DEMO_MATCHES = [
   },
 ]
 
+export interface DemoApplication {
+  id: string
+  recruitment_id: string
+  message: string
+  status: 'pending'
+  created_at: string
+}
+
 interface DemoState {
   enabled: boolean
   step: number
   matches: typeof DEMO_MATCHES
   recruitments: typeof DEMO_RECRUITMENTS
+  applications: DemoApplication[]
   enable: () => void
   disable: () => void
   nextStep: () => void
   prevStep: () => void
+  apply: (recruitmentId: string, message: string) => void
 }
 
 export const useDemoStore = create<DemoState>((set) => ({
@@ -79,6 +89,7 @@ export const useDemoStore = create<DemoState>((set) => ({
   step: 1,
   matches: DEMO_MATCHES,
   recruitments: DEMO_RECRUITMENTS,
+  applications: [],
   enable: () => {
     localStorage.setItem('demo_mode', 'true')
     set({ enabled: true, step: 1 })
@@ -89,4 +100,10 @@ export const useDemoStore = create<DemoState>((set) => ({
   },
   nextStep: () => set((s) => ({ step: Math.min(s.step + 1, 7) })),
   prevStep: () => set((s) => ({ step: Math.max(s.step - 1, 1) })),
+  apply: (recruitmentId, message) => set((s) => ({
+    applications: [
+      { id: `demo-app-${Date.now()}`, recruitment_id: recruitmentId, message, status: 'pending', created_at: new Date().toISOString() },
+      ...s.applications,
+    ],
+  })),
 }))

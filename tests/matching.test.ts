@@ -74,6 +74,31 @@ describe('calculateMatch', () => {
     const result = calculateMatch(deleted, baseFilters)
     expect(result.score).toBeLessThanOrEqual(10) // low score
   })
+
+  it('should use userProfile skills to boost score', () => {
+    const profile = {
+      id: 'p1',
+      user_id: 'user-me',
+      display_name: '我',
+      major: '软件工程',
+      grade: '大二',
+      skills: ['前端开发', '数据分析'],
+      bio: '',
+      availability: '',
+      competition_interests: [],
+      contact_visibility: 'logged_in' as const,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    }
+    const withProfile = calculateMatch(baseRecruitment, baseFilters, profile)
+    const withoutProfile = calculateMatch(baseRecruitment, baseFilters)
+    expect(withProfile.score).toBeGreaterThan(withoutProfile.score)
+    expect(withProfile.reasons.some(r => r.includes('你具备对方需要'))).toBe(true)
+  })
+
+  it('should not crash with empty profile', () => {
+    expect(() => calculateMatch(baseRecruitment, baseFilters, undefined)).not.toThrow()
+  })
 })
 
 describe('rankMatches', () => {
